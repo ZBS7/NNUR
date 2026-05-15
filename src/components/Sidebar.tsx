@@ -46,9 +46,21 @@ export default function Sidebar() {
       {/* P2P status */}
       <div className="peer-status-bar">
         <div className={`peer-status-dot ${peerError ? 'error' : peerReady ? 'ready' : 'connecting'}`} />
-        <span style={{ color: 'var(--text3)' }}>
-          {peerError ? 'Connection error' : peerReady ? `Connected · ${identity?.peerId?.slice(0, 16)}...` : 'Connecting to P2P network...'}
+        <span style={{ color: 'var(--text3)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {peerError
+            ? `Connection error`
+            : peerReady
+            ? `Connected · ${identity?.peerId?.slice(0, 14)}…`
+            : 'Connecting to P2P network…'}
         </span>
+        {peerError && (
+          <button
+            onClick={() => { window.location.reload(); }}
+            style={{ fontSize: 11, color: 'var(--accent3)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: 4, flexShrink: 0 }}
+          >
+            Retry
+          </button>
+        )}
       </div>
 
       {/* Search */}

@@ -365,7 +365,12 @@ img { max-width: 100%; display: block; }
   .sidebar { width: 100%; min-width: 100%; }
   .main { position: fixed; inset: 0; z-index: 10; transform: translateX(100%); transition: transform 0.3s ease; }
   .main.active { transform: translateX(0); }
-  .back-btn { display: flex; }
+  .back-btn { display: flex !important; }
   .bubble { max-width: 85%; }
 }
 .back-btn { display: none; }
+
+/* Show back button always on small screens */
+@media (max-width: 900px) {
+  .back-btn { display: flex !important; }
+}

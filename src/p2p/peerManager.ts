@@ -26,6 +26,21 @@ interface PeerState {
 
 type EventHandler = (...args: any[]) => void;
 
+// Multiple free PeerJS-compatible signaling servers to try
+const SIGNALING_SERVERS = [
+  { host: '0.peerjs.com', port: 443, path: '/', secure: true },
+  { host: 'peerjs.com', port: 443, path: '/myapp', secure: true },
+];
+
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+];
+
 class PeerManager {
   private peer: Peer | null = null;
   private myPeerId = '';
@@ -36,6 +51,9 @@ class PeerManager {
   private connections = new Map<string, PeerState>();
   private handlers = new Map<string, EventHandler[]>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private serverIndex = 0;
+  private initResolve: (() => void) | null = null;
+  private initReject: ((e: any) => void) | null = null;
 
   // Active call state
   private activeCall: MediaConnection | null = null;
@@ -48,50 +66,95 @@ class PeerManager {
     this.myPublicKey = publicKey;
     this.myDisplayName = displayName;
     this.myAvatar = avatar || '';
+    this.serverIndex = 0;
 
+    return this.tryConnect();
+  }
+
+  private tryConnect(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.peer = new Peer(peerId, {
-        host: '0.peerjs.com',
-        port: 443,
-        path: '/',
-        secure: true,
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-          ],
-        },
-        debug: 0,
-      });
+      this.initResolve = resolve;
+      this.initReject = reject;
+      this.createPeer();
+    });
+  }
 
-      this.peer.on('open', (id) => {
-        console.log('[NUR] Connected, peer ID:', id);
-        this.emit('ready', id);
-        resolve();
-      });
+  private createPeer() {
+    const server = SIGNALING_SERVERS[this.serverIndex % SIGNALING_SERVERS.length];
 
-      this.peer.on('connection', (conn) => this.handleIncomingConnection(conn));
+    console.log(`[NUR] Connecting to signaling server: ${server.host}`);
 
-      // Incoming call
-      this.peer.on('call', (call) => {
-        this.emit('incoming-call', {
-          peerId: call.peer,
-          call,
-          callType: (call.metadata?.callType as 'audio' | 'video') || 'audio',
-        });
-      });
+    this.peer = new Peer(this.myPeerId, {
+      host: server.host,
+      port: server.port,
+      path: server.path,
+      secure: server.secure,
+      config: { iceServers: ICE_SERVERS },
+      debug: 0,
+    });
 
-      this.peer.on('error', (err) => {
-        console.error('[NUR] Peer error:', err);
-        this.emit('error', err);
-        if ((err as any).type === 'unavailable-id') reject(err);
-      });
+    // Timeout — if no connection in 8s, try next server
+    const timeout = setTimeout(() => {
+      console.warn('[NUR] Signaling server timeout, trying next...');
+      this.peer?.destroy();
+      this.serverIndex++;
+      if (this.serverIndex < SIGNALING_SERVERS.length * 2) {
+        this.createPeer();
+      } else {
+        this.initReject?.(new Error('Could not connect to P2P network. Check your internet connection.'));
+      }
+    }, 8000);
 
-      this.peer.on('disconnected', () => {
-        this.emit('server-disconnected');
-        setTimeout(() => this.peer?.reconnect(), 3000);
+    this.peer.on('open', (id) => {
+      clearTimeout(timeout);
+      console.log('[NUR] Connected! Peer ID:', id);
+      this.emit('ready', id);
+      this.initResolve?.();
+      this.initResolve = null;
+      this.initReject = null;
+    });
+
+    this.peer.on('connection', (conn) => this.handleIncomingConnection(conn));
+
+    this.peer.on('call', (call) => {
+      this.emit('incoming-call', {
+        peerId: call.peer,
+        call,
+        callType: (call.metadata?.callType as 'audio' | 'video') || 'audio',
       });
+    });
+
+    this.peer.on('error', (err: any) => {
+      clearTimeout(timeout);
+      console.error('[NUR] Peer error:', err.type, err.message);
+
+      if (err.type === 'unavailable-id') {
+        // ID taken — generate a new one and retry
+        this.myPeerId = `nur-${Math.random().toString(36).slice(2, 14)}`;
+        console.warn('[NUR] ID taken, retrying with:', this.myPeerId);
+        this.peer?.destroy();
+        setTimeout(() => this.createPeer(), 500);
+        return;
+      }
+
+      if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') {
+        this.serverIndex++;
+        this.peer?.destroy();
+        setTimeout(() => this.createPeer(), 1000);
+        return;
+      }
+
+      this.emit('error', err);
+    });
+
+    this.peer.on('disconnected', () => {
+      console.warn('[NUR] Disconnected from signaling, reconnecting...');
+      this.emit('server-disconnected');
+      setTimeout(() => {
+        if (this.peer && !this.peer.destroyed) {
+          this.peer.reconnect();
+        }
+      }, 2000);
     });
   }
 
@@ -100,9 +163,12 @@ class PeerManager {
     if (!targetPeerId || targetPeerId === this.myPeerId) return;
     const existing = this.connections.get(targetPeerId);
     if (existing?.status === 'connected') return;
-    if (!this.peer) return;
+    if (existing?.status === 'connecting') return; // already trying
+    if (!this.peer || this.peer.destroyed) return;
 
+    console.log('[NUR] Connecting to peer:', targetPeerId);
     this.emit('connection-status', { peerId: targetPeerId, status: 'connecting' });
+
     const conn = this.peer.connect(targetPeerId, {
       reliable: true,
       serialization: 'json',
@@ -113,18 +179,42 @@ class PeerManager {
 
   // ── Setup data connection ─────────────────────────────────────────────────
   private setupConnection(conn: DataConnection, peerId: string) {
+    // Remove old state if exists
+    const old = this.connections.get(peerId);
+    if (old && old.conn !== conn) {
+      try { old.conn.close(); } catch {}
+    }
+
     const state: PeerState = { conn, status: 'connecting', peerId };
     this.connections.set(peerId, state);
 
+    // Connection open timeout
+    const openTimeout = setTimeout(() => {
+      if (state.status === 'connecting') {
+        console.warn('[NUR] Connection to', peerId, 'timed out');
+        state.status = 'disconnected';
+        this.connections.delete(peerId);
+        this.emit('connection-status', { peerId, status: 'disconnected' });
+        // Retry after 5s
+        const timer = setTimeout(() => this.connectTo(peerId), 5000);
+        this.reconnectTimers.set(peerId, timer);
+      }
+    }, 15000);
+
     conn.on('open', async () => {
+      clearTimeout(openTimeout);
       state.status = 'connected';
+      console.log('[NUR] Connected to peer:', peerId);
       this.emit('connection-status', { peerId, status: 'connected' });
+
+      // Send handshake
       this.sendRaw(conn, {
         type: 'handshake',
         displayName: this.myDisplayName,
         avatar: this.myAvatar,
         publicKey: this.myPublicKey,
       });
+
       await db.contacts.update(peerId, { online: true, lastSeen: Date.now() });
       this.emit('contact-online', peerId);
       this.flushPendingMessages(peerId);
@@ -133,22 +223,31 @@ class PeerManager {
     conn.on('data', (data) => this.handleData(peerId, data as P2PMessage));
 
     conn.on('close', async () => {
+      clearTimeout(openTimeout);
       state.status = 'disconnected';
       this.connections.delete(peerId);
       await db.contacts.update(peerId, { online: false, lastSeen: Date.now() });
       this.emit('connection-status', { peerId, status: 'disconnected' });
       this.emit('contact-offline', peerId);
+
+      // Clear old timer and set new reconnect
+      const old = this.reconnectTimers.get(peerId);
+      if (old) clearTimeout(old);
       const timer = setTimeout(() => this.connectTo(peerId), 5000);
       this.reconnectTimers.set(peerId, timer);
     });
 
     conn.on('error', (err) => {
+      clearTimeout(openTimeout);
       console.error('[NUR] Connection error with', peerId, err);
       state.status = 'disconnected';
+      this.connections.delete(peerId);
+      this.emit('connection-status', { peerId, status: 'disconnected' });
     });
   }
 
   private handleIncomingConnection(conn: DataConnection) {
+    console.log('[NUR] Incoming connection from:', conn.peer);
     this.setupConnection(conn, conn.peer);
   }
 
@@ -257,67 +356,31 @@ class PeerManager {
   }
 
   // ── CALLS ─────────────────────────────────────────────────────────────────
-
   async startCall(toPeerId: string, callType: 'audio' | 'video'): Promise<MediaStream> {
     if (!this.peer) throw new Error('Not connected');
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: callType === 'video',
-    });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: callType === 'video' });
     this.localStream = stream;
-
     const call = this.peer.call(toPeerId, stream, {
       metadata: { callType, callerName: this.myDisplayName, callerAvatar: this.myAvatar },
     });
     this.activeCall = call;
-
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.endCall(toPeerId);
-        reject(new Error('Call timeout — no answer'));
-      }, 30000);
-
-      call.on('stream', (remoteStream) => {
-        clearTimeout(timeout);
-        this.emit('call-stream', { peerId: toPeerId, stream: remoteStream });
-        resolve(stream);
-      });
-
-      call.on('close', () => {
-        clearTimeout(timeout);
-        this.cleanupCall();
-        this.emit('call-ended', { peerId: toPeerId });
-      });
-
-      call.on('error', (err) => {
-        clearTimeout(timeout);
-        this.cleanupCall();
-        reject(err);
-      });
+      const timeout = setTimeout(() => { this.endCall(toPeerId); reject(new Error('No answer')); }, 30000);
+      call.on('stream', (remoteStream) => { clearTimeout(timeout); this.emit('call-stream', { peerId: toPeerId, stream: remoteStream }); resolve(stream); });
+      call.on('close', () => { clearTimeout(timeout); this.cleanupCall(); this.emit('call-ended', { peerId: toPeerId }); });
+      call.on('error', (err) => { clearTimeout(timeout); this.cleanupCall(); reject(err); });
     });
   }
 
   async answerCall(call: MediaConnection, callType: 'audio' | 'video'): Promise<{ localStream: MediaStream; remoteStream: MediaStream }> {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: callType === 'video',
-    });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: callType === 'video' });
     this.localStream = stream;
     this.activeCall = call;
     call.answer(stream);
-
     return new Promise((resolve, reject) => {
-      call.on('stream', (remoteStream) => {
-        resolve({ localStream: stream, remoteStream });
-      });
-      call.on('close', () => {
-        this.cleanupCall();
-        this.emit('call-ended', { peerId: call.peer });
-      });
-      call.on('error', (err) => {
-        this.cleanupCall();
-        reject(err);
-      });
+      call.on('stream', (remoteStream) => resolve({ localStream: stream, remoteStream }));
+      call.on('close', () => { this.cleanupCall(); this.emit('call-ended', { peerId: call.peer }); });
+      call.on('error', (err) => { this.cleanupCall(); reject(err); });
     });
   }
 
@@ -341,13 +404,8 @@ class PeerManager {
     this.activeCall = null;
   }
 
-  toggleMute(muted: boolean) {
-    this.localStream?.getAudioTracks().forEach((t) => (t.enabled = !muted));
-  }
-
-  toggleCamera(off: boolean) {
-    this.localStream?.getVideoTracks().forEach((t) => (t.enabled = !off));
-  }
+  toggleMute(muted: boolean) { this.localStream?.getAudioTracks().forEach((t) => (t.enabled = !muted)); }
+  toggleCamera(off: boolean) { this.localStream?.getVideoTracks().forEach((t) => (t.enabled = !off)); }
 
   // ── Send message ──────────────────────────────────────────────────────────
   async sendMessage(toPeerId: string, content: string, msgType = 'text', extra?: { fileName?: string; fileSize?: number; mimeType?: string; replyToId?: string }): Promise<Message> {
@@ -390,6 +448,7 @@ class PeerManager {
       await db.messages.update(message.id, { status: 'sent' });
       message.status = 'sent';
     } else {
+      // Try to connect and messages will be flushed on open
       this.connectTo(toPeerId);
     }
 
@@ -438,10 +497,7 @@ class PeerManager {
     try { conn.send(data); } catch (err) { console.error('[NUR] Send error:', err); }
   }
 
-  getConnectionStatus(peerId: string): ConnectionStatus {
-    return this.connections.get(peerId)?.status ?? 'disconnected';
-  }
-
+  getConnectionStatus(peerId: string): ConnectionStatus { return this.connections.get(peerId)?.status ?? 'disconnected'; }
   isConnected(peerId: string) { return this.connections.get(peerId)?.status === 'connected'; }
   getMyPeerId() { return this.myPeerId; }
 
