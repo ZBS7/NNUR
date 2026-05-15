@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import Avatar from './Avatar';
 import AddContactModal from './AddContactModal';
-import { IoAdd, IoSearch, IoQrCode, IoRefresh } from 'react-icons/io5';
+import ProfileModal from './ProfileModal';
+import { IoAdd, IoSearch, IoSettingsOutline, IoRefresh } from 'react-icons/io5';
 
 function fmtTime(ts?: number) {
   if (!ts) return '';
@@ -17,6 +18,7 @@ export default function Sidebar() {
   const { identity, contacts, chats, activeChatId, setActiveChat, connectionStatuses, peerReady, peerError } = useAppStore();
   const [filter, setFilter] = useState('');
   const [showAdd, setShowAdd] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
 
   const filteredChats = chats.filter((ch) => {
     const contact = contacts.find((c) => c.id === ch.id);
@@ -121,17 +123,20 @@ export default function Sidebar() {
         })}
       </div>
 
-      {/* Footer */}
-      <div className="sidebar-footer" onClick={() => setShowAdd(true)}>
+      {/* Footer — click to open settings */}
+      <div className="sidebar-footer" onClick={() => setShowProfile(true)} title="Settings">
         <Avatar src={identity?.avatar} name={identity?.displayName || 'Me'} size={38} />
         <div className="sidebar-footer-info">
           <span className="sidebar-footer-name">{identity?.displayName}</span>
           <span className="sidebar-footer-id">{identity?.peerId}</span>
         </div>
-        <button className="icon-btn" title="Share my ID"><IoQrCode /></button>
+        <button className="icon-btn" title="Settings" onClick={(e) => { e.stopPropagation(); setShowProfile(true); }}>
+          <IoSettingsOutline />
+        </button>
       </div>
 
       {showAdd && <AddContactModal onClose={() => setShowAdd(false)} />}
+      {showProfile && <ProfileModal onClose={() => setShowProfile(false)} />}
     </div>
   );
 }

@@ -1,13 +1,11 @@
 /**
  * PeerManager — P2P connections, message routing, E2EE, calls
- * Fixed: online status, large file chunking, message retry
  */
 import Peer, { DataConnection, MediaConnection } from 'peerjs';
 import { v4 as uuidv4 } from 'uuid';
 import { db, Message } from '../db/database';
 import { encrypt, decrypt, getSharedKey } from '../crypto/e2ee';
 
-// ── Config ────────────────────────────────────────────────────────────────
 const SIGNAL_HOST = 'nur-signal-production.up.railway.app';
 const SIGNAL_PATH = '/nur';
 
@@ -17,14 +15,30 @@ const ICE_SERVERS = [
   { urls: 'stun:stun2.l.google.com:19302' },
   { urls: 'stun:stun3.l.google.com:19302' },
   { urls: 'stun:stun4.l.google.com:19302' },
-  { urls: 'stun:global.stun.twilio.com:3478' },
 ];
 
-// Max size per chunk for large files (64KB)
-const CHUNK_SIZE = 64 * 1024;
+// Chunk size for large binary data (32KB is safe for WebRTC DataChannel)
+const CHUNK_SIZE = 32 * 1024;
+
+// Type for a chat message payload
+interface ChatPayload {
+  type: 'chat';
+  id: string;
+  content: string;
+  msgType: string;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  replyToId?: string;
+  createdAt: number;
+  encrypted: boolean;
+  chunked?: boolean;
+  chunkIndex?: number;
+  totalChunks?: number;
+}
 
 export type P2PMessage =
-  | { type: 'chat'; id: string; content: string; mimeType?: string; fileName?: string; fileSize?: number; msgType: string; replyToId?: string; createdAt: number; encrypted: boolean; chunked?: boolean; chunkIndex?: number; totalChunks?: number }
+  | ChatPayload
   | { type: 'delivered'; messageId: string }
   | { type: 'read'; messageId: string }
   | { type: 'typing'; isTyping: boolean }
@@ -41,8 +55,16 @@ interface PeerState {
   conn: DataConnection;
   status: ConnectionStatus;
   peerId: string;
+  // Ping/pong for keepalive — only when NOT transferring
   pingTimer?: ReturnType<typeof setInterval>;
   pongTimeout?: ReturnType<typeof setTimeout>;
+  transferring: boolean; // true while sending chunks
+}
+
+interface ChunkBuffer {
+  chunks: string[];
+  total: number;
+  meta: ChatPayload;
 }
 
 type EventHandler = (...args: any[]) => void;
@@ -58,11 +80,7 @@ class PeerManager {
   private handlers = new Map<string, EventHandler[]>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private retryCount = 0;
-
-  // Chunk reassembly buffers: messageId -> chunks[]
-  private chunkBuffers = new Map<string, { chunks: string[]; total: number; meta: any }>();
-
-  // Active call
+  private chunkBuffers = new Map<string, ChunkBuffer>();
   private activeCall: MediaConnection | null = null;
   private localStream: MediaStream | null = null;
 
@@ -74,21 +92,11 @@ class PeerManager {
     this.myDisplayName = displayName;
     this.myAvatar = avatar || '';
     this.retryCount = 0;
-    return this.createPeerPromise();
-  }
-
-  private createPeerPromise(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.createPeer(resolve, reject);
-    });
+    return new Promise<void>((resolve, reject) => this.createPeer(resolve, reject));
   }
 
   private createPeer(resolve?: () => void, reject?: (e: any) => void) {
-    console.log(`[NUR] Connecting to ${SIGNAL_HOST}, ID: ${this.myPeerId}`);
-
-    if (this.peer && !this.peer.destroyed) {
-      this.peer.destroy();
-    }
+    if (this.peer && !this.peer.destroyed) this.peer.destroy();
 
     this.peer = new Peer(this.myPeerId, {
       host: SIGNAL_HOST,
@@ -100,20 +108,19 @@ class PeerManager {
     });
 
     const timeout = setTimeout(() => {
-      console.warn('[NUR] Timeout, retrying...');
       this.peer?.destroy();
       this.retryCount++;
       if (this.retryCount < 5) {
         setTimeout(() => this.createPeer(resolve, reject), 2000);
       } else {
-        reject?.(new Error('Cannot connect to P2P network. Check internet connection.'));
+        reject?.(new Error('Cannot connect to P2P network.'));
       }
     }, 10000);
 
     this.peer.on('open', (id) => {
       clearTimeout(timeout);
-      console.log('[NUR] Connected! ID:', id);
       this.retryCount = 0;
+      console.log('[NUR] Connected, ID:', id);
       this.emit('ready', id);
       resolve?.();
     });
@@ -122,15 +129,14 @@ class PeerManager {
 
     this.peer.on('call', (call) => {
       this.emit('incoming-call', {
-        peerId: call.peer,
-        call,
+        peerId: call.peer, call,
         callType: (call.metadata?.callType as 'audio' | 'video') || 'audio',
       });
     });
 
     this.peer.on('error', (err: any) => {
       clearTimeout(timeout);
-      console.error('[NUR] Error:', err.type, err.message);
+      console.error('[NUR] Error:', err.type);
 
       if (err.type === 'unavailable-id') {
         this.myPeerId = `nur${Math.random().toString(36).slice(2, 10)}`;
@@ -138,76 +144,62 @@ class PeerManager {
         setTimeout(() => this.createPeer(resolve, reject), 500);
         return;
       }
-
+      if (err.type === 'peer-unavailable') {
+        const match = err.message?.match(/Could not connect to peer (.+)/);
+        if (match) {
+          const pid = match[1].trim();
+          this.connections.delete(pid);
+          this.emit('connection-status', { peerId: pid, status: 'disconnected' });
+          db.contacts.update(pid, { online: false, lastSeen: Date.now() });
+          this.scheduleReconnect(pid, 10000);
+        }
+        return;
+      }
       if (['network', 'server-error', 'socket-error', 'socket-closed'].includes(err.type)) {
         this.retryCount++;
         this.peer?.destroy();
         setTimeout(() => this.createPeer(resolve, reject), 2000);
         return;
       }
-
-      // Non-fatal peer-unavailable — just means the other peer is offline
-      if (err.type === 'peer-unavailable') {
-        const match = err.message?.match(/Could not connect to peer (.+)/);
-        if (match) {
-          const peerId = match[1];
-          this.connections.delete(peerId);
-          this.emit('connection-status', { peerId, status: 'disconnected' });
-          db.contacts.update(peerId, { online: false, lastSeen: Date.now() });
-        }
-        return;
-      }
-
       this.emit('error', err);
     });
 
     this.peer.on('disconnected', () => {
-      console.warn('[NUR] Signaling disconnected, reconnecting...');
       this.emit('server-disconnected');
       setTimeout(() => {
-        if (this.peer && !this.peer.destroyed) {
-          this.peer.reconnect();
-        } else {
-          this.createPeer();
-        }
+        if (this.peer && !this.peer.destroyed) this.peer.reconnect();
+        else this.createPeer();
       }, 3000);
     });
   }
 
-  // ── Connect to peer ───────────────────────────────────────────────────────
+  // ── Connect ───────────────────────────────────────────────────────────────
   connectTo(targetPeerId: string): void {
     if (!targetPeerId || targetPeerId === this.myPeerId) return;
-    const existing = this.connections.get(targetPeerId);
-    if (existing?.status === 'connected') return;
-    if (existing?.status === 'connecting') return;
+    const ex = this.connections.get(targetPeerId);
+    if (ex?.status === 'connected' || ex?.status === 'connecting') return;
     if (!this.peer || this.peer.destroyed) return;
 
-    console.log('[NUR] Connecting to:', targetPeerId);
     this.emit('connection-status', { peerId: targetPeerId, status: 'connecting' });
-
     const conn = this.peer.connect(targetPeerId, {
-      reliable: true,
-      serialization: 'json',
+      reliable: true, serialization: 'json',
       metadata: { from: this.myPeerId },
     });
     this.setupConnection(conn, targetPeerId);
   }
 
-  // ── Setup connection ──────────────────────────────────────────────────────
   private setupConnection(conn: DataConnection, peerId: string) {
     const old = this.connections.get(peerId);
     if (old && old.conn !== conn) {
-      clearInterval(old.pingTimer);
-      clearTimeout(old.pongTimeout);
+      this.stopPing(old);
       try { old.conn.close(); } catch {}
     }
 
-    const state: PeerState = { conn, status: 'connecting', peerId };
+    const state: PeerState = { conn, status: 'connecting', peerId, transferring: false };
     this.connections.set(peerId, state);
 
     const openTimeout = setTimeout(() => {
       if (state.status !== 'connected') {
-        console.warn('[NUR] Open timeout for', peerId);
         this.connections.delete(peerId);
         this.emit('connection-status', { peerId, status: 'disconnected' });
         this.scheduleReconnect(peerId, 5000);
@@ -217,41 +209,26 @@ class PeerManager {
     conn.on('open', async () => {
       clearTimeout(openTimeout);
       state.status = 'connected';
-      console.log('[NUR] Open with:', peerId);
       this.emit('connection-status', { peerId, status: 'connected' });
-
-      // Send handshake
       this.sendRaw(conn, {
         type: 'handshake',
         displayName: this.myDisplayName,
         avatar: this.myAvatar,
         publicKey: this.myPublicKey,
       });
-
       await db.contacts.update(peerId, { online: true, lastSeen: Date.now() });
       this.emit('contact-online', peerId);
       this.flushPendingMessages(peerId);
-
-      // Heartbeat ping every 20s to detect silent disconnects
-      state.pingTimer = setInterval(() => {
-        if (state.status !== 'connected') return;
-        this.sendRaw(conn, { type: 'ping' });
-        state.pongTimeout = setTimeout(() => {
-          console.warn('[NUR] Pong timeout for', peerId, '— reconnecting');
-          conn.close();
-        }, 5000);
-      }, 20000);
+      this.startPing(state);
     });
 
     conn.on('data', (data) => this.handleData(peerId, data as P2PMessage, state));
 
     conn.on('close', async () => {
       clearTimeout(openTimeout);
-      clearInterval(state.pingTimer);
-      clearTimeout(state.pongTimeout);
+      this.stopPing(state);
       state.status = 'disconnected';
       this.connections.delete(peerId);
-      console.log('[NUR] Closed with:', peerId);
       await db.contacts.update(peerId, { online: false, lastSeen: Date.now() });
       this.emit('connection-status', { peerId, status: 'disconnected' });
       this.emit('contact-offline', peerId);
@@ -260,9 +237,8 @@ class PeerManager {
 
     conn.on('error', (err) => {
       clearTimeout(openTimeout);
-      clearInterval(state.pingTimer);
-      clearTimeout(state.pongTimeout);
-      console.error('[NUR] Conn error with', peerId, err);
+      this.stopPing(state);
+      console.error('[NUR] Conn error:', peerId, err);
       state.status = 'disconnected';
       this.connections.delete(peerId);
       this.emit('connection-status', { peerId, status: 'disconnected' });
@@ -270,15 +246,27 @@ class PeerManager {
     });
   }
 
-  private scheduleReconnect(peerId: string, delay: number) {
-    const old = this.reconnectTimers.get(peerId);
-    if (old) clearTimeout(old);
-    const t = setTimeout(() => this.connectTo(peerId), delay);
-    this.reconnectTimers.set(peerId, t);
+  // Ping only when idle (not transferring)
+  private startPing(state: PeerState) {
+    this.stopPing(state);
+    state.pingTimer = setInterval(() => {
+      if (state.status !== 'connected' || state.transferring) return;
+      this.sendRaw(state.conn, { type: 'ping' });
+      state.pongTimeout = setTimeout(() => {
+        if (!state.transferring) {
+          console.warn('[NUR] Pong timeout, closing:', state.peerId);
+          state.conn.close();
+        }
+      }, 8000);
+    }, 25000);
+  }
+
+  private stopPing(state: PeerState) {
+    if (state.pingTimer) clearInterval(state.pingTimer);
+    if (state.pongTimeout) clearTimeout(state.pongTimeout);
   }
 
   private handleIncomingConnection(conn: DataConnection) {
-    console.log('[NUR] Incoming from:', conn.peer);
     this.setupConnection(conn, conn.peer);
   }
 
@@ -290,7 +278,7 @@ class PeerManager {
         break;
 
       case 'pong':
-        clearTimeout(state.pongTimeout);
+        if (state.pongTimeout) clearTimeout(state.pongTimeout);
         break;
 
       case 'handshake':
@@ -324,15 +312,17 @@ class PeerManager {
       }
 
       case 'chat': {
-        // Handle chunked messages (large files/audio)
-        let chatData = data;
+        // Chunked reassembly
+        let chatData: ChatPayload = data;
         if (data.chunked && data.totalChunks && data.totalChunks > 1) {
-          const buf = this.chunkBuffers.get(data.id) || { chunks: [] as string[], total: data.totalChunks, meta: data };
+          let buf = this.chunkBuffers.get(data.id);
+          if (!buf) {
+            buf = { chunks: new Array(data.totalChunks).fill(''), total: data.totalChunks, meta: data };
+            this.chunkBuffers.set(data.id, buf);
+          }
           buf.chunks[data.chunkIndex!] = data.content;
-          this.chunkBuffers.set(data.id, buf);
-          const received = buf.chunks.filter(Boolean).length;
-          if (received < buf.total) break;
-          // Reassemble all chunks
+          const received = buf.chunks.filter((c) => c !== '').length;
+          if (received < buf.total) break; // wait for more chunks
           chatData = { ...buf.meta, content: buf.chunks.join(''), chunked: false };
           this.chunkBuffers.delete(data.id);
         }
@@ -352,9 +342,9 @@ class PeerManager {
         const message: Message = {
           id: chatData.id, chatId: fromPeerId, senderId: fromPeerId,
           type: chatData.msgType as any, content,
-          fileName: chatData.fileName, fileSize: chatData.fileSize, mimeType: chatData.mimeType,
-          replyToId: chatData.replyToId, status: 'delivered',
-          createdAt: chatData.createdAt, encrypted: chatData.encrypted,
+          fileName: chatData.fileName, fileSize: chatData.fileSize,
+          mimeType: chatData.mimeType, replyToId: chatData.replyToId,
+          status: 'delivered', createdAt: chatData.createdAt, encrypted: chatData.encrypted,
         };
         await db.messages.put(message);
         await db.chats.update(fromPeerId, {
@@ -393,20 +383,20 @@ class PeerManager {
     }
   }
 
-  // ── Send message (with chunking for large content) ────────────────────────
+  // ── Send message ──────────────────────────────────────────────────────────
   async sendMessage(toPeerId: string, content: string, msgType = 'text', extra?: {
     fileName?: string; fileSize?: number; mimeType?: string; replyToId?: string;
   }): Promise<Message> {
     const identity = await db.identity.get('me');
     const contact = await db.contacts.get(toPeerId);
-    let encryptedContent = content;
+    let sendContent = content;
     let isEncrypted = false;
 
-    // Only encrypt text messages — binary data (base64) is too large to encrypt reliably
+    // Only encrypt text — binary base64 is too large
     if (identity && contact?.publicKey && msgType === 'text') {
       try {
         const sharedKey = await getSharedKey(identity.privateKey, contact.publicKey, toPeerId);
-        encryptedContent = await encrypt(content, sharedKey);
+        sendContent = await encrypt(content, sharedKey);
         isEncrypted = true;
       } catch {}
     }
@@ -428,7 +418,7 @@ class PeerManager {
 
     const state = this.connections.get(toPeerId);
     if (state?.status === 'connected') {
-      await this.sendMessageOverConn(state.conn, message, encryptedContent, isEncrypted, extra);
+      await this.transmit(state, message, sendContent, isEncrypted, extra);
       await db.messages.update(message.id, { status: 'sent' });
       message.status = 'sent';
     } else {
@@ -439,48 +429,52 @@ class PeerManager {
     return message;
   }
 
-  private async sendMessageOverConn(
-    conn: DataConnection, message: Message,
-    encryptedContent: string, isEncrypted: boolean,
+  // Transmit with chunking for large payloads
+  private async transmit(
+    state: PeerState, message: Message,
+    sendContent: string, isEncrypted: boolean,
     extra?: { fileName?: string; fileSize?: number; mimeType?: string; replyToId?: string }
   ) {
-    const base: any = {
+    const base: Omit<ChatPayload, 'content' | 'chunked' | 'chunkIndex' | 'totalChunks'> = {
       type: 'chat', id: message.id, msgType: message.type,
       fileName: extra?.fileName, fileSize: extra?.fileSize,
       mimeType: extra?.mimeType, replyToId: extra?.replyToId,
       createdAt: message.createdAt, encrypted: isEncrypted,
     };
 
-    // Split large content into chunks (for audio/video/files)
-    if (encryptedContent.length > CHUNK_SIZE) {
-      const totalChunks = Math.ceil(encryptedContent.length / CHUNK_SIZE);
+    if (sendContent.length <= CHUNK_SIZE) {
+      this.sendRaw(state.conn, { ...base, content: sendContent });
+      return;
+    }
+
+    // Large payload — chunk it, pause ping during transfer
+    state.transferring = true;
+    const totalChunks = Math.ceil(sendContent.length / CHUNK_SIZE);
+    console.log(`[NUR] Sending ${totalChunks} chunks for ${message.type} (${Math.round(sendContent.length / 1024)}KB)`);
+
+    try {
       for (let i = 0; i < totalChunks; i++) {
-        const chunk = encryptedContent.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        this.sendRaw(conn, {
-          ...base,
-          content: chunk,
-          chunked: true,
-          chunkIndex: i,
-          totalChunks,
+        const chunk = sendContent.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        this.sendRaw(state.conn, {
+          ...base, content: chunk,
+          chunked: true, chunkIndex: i, totalChunks,
         });
-        // Small delay between chunks to avoid overwhelming the channel
-        if (i < totalChunks - 1) await new Promise(r => setTimeout(r, 10));
+        // Yield to event loop between chunks to avoid blocking
+        await new Promise((r) => setTimeout(r, 15));
       }
-    } else {
-      this.sendRaw(conn, { ...base, content: encryptedContent });
+    } finally {
+      state.transferring = false;
     }
   }
 
   private async flushPendingMessages(peerId: string) {
     const pending = await db.messages.where('chatId').equals(peerId)
       .and((m) => m.status === 'sending' && m.senderId === this.myPeerId).toArray();
-
     for (const msg of pending) {
       const identity = await db.identity.get('me');
       const contact = await db.contacts.get(peerId);
       let content = msg.content;
       let isEncrypted = false;
-
       if (identity && contact?.publicKey && msg.type === 'text') {
         try {
           const sharedKey = await getSharedKey(identity.privateKey, contact.publicKey, peerId);
@@ -488,11 +482,11 @@ class PeerManager {
           isEncrypted = true;
         } catch {}
       }
-
       const state = this.connections.get(peerId);
       if (state?.status === 'connected') {
-        await this.sendMessageOverConn(state.conn, msg, content, isEncrypted, {
-          fileName: msg.fileName, fileSize: msg.fileSize, mimeType: msg.mimeType, replyToId: msg.replyToId,
+        await this.transmit(state, msg, content, isEncrypted, {
+          fileName: msg.fileName, fileSize: msg.fileSize,
+          mimeType: msg.mimeType, replyToId: msg.replyToId,
         });
         await db.messages.update(msg.id, { status: 'sent' });
       }
@@ -551,7 +545,6 @@ class PeerManager {
   toggleMute(muted: boolean) { this.localStream?.getAudioTracks().forEach((t) => (t.enabled = !muted)); }
   toggleCamera(off: boolean) { this.localStream?.getVideoTracks().forEach((t) => (t.enabled = !off)); }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
   sendTyping(toPeerId: string, isTyping: boolean) {
     const s = this.connections.get(toPeerId);
     if (s?.status === 'connected') this.sendRaw(s.conn, { type: 'typing', isTyping });
@@ -566,13 +559,20 @@ class PeerManager {
     try { conn.send(data); } catch (e) { console.error('[NUR] Send error:', e); }
   }
 
+  private scheduleReconnect(peerId: string, delay: number) {
+    const old = this.reconnectTimers.get(peerId);
+    if (old) clearTimeout(old);
+    const t = setTimeout(() => this.connectTo(peerId), delay);
+    this.reconnectTimers.set(peerId, t);
+  }
+
   getConnectionStatus(peerId: string): ConnectionStatus { return this.connections.get(peerId)?.status ?? 'disconnected'; }
   isConnected(peerId: string) { return this.connections.get(peerId)?.status === 'connected'; }
   getMyPeerId() { return this.myPeerId; }
 
   destroy() {
     this.reconnectTimers.forEach((t) => clearTimeout(t));
-    this.connections.forEach((s) => { clearInterval(s.pingTimer); clearTimeout(s.pongTimeout); });
+    this.connections.forEach((s) => this.stopPing(s));
     this.cleanupCall();
     this.peer?.destroy();
     this.peer = null;
