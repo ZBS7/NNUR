@@ -113,7 +113,13 @@ export default function ChatView({ chatId }: Props) {
     try {
       await sendMessage(chatId, content, 'text', replyTo ? { replyToId: replyTo.id } : undefined);
       setReplyTo(null);
-    } catch {} finally { setSending(false); }
+    } catch (err) {
+      console.error('[ChatView] Send error:', err);
+      // Restore text if send failed
+      setText(content);
+    } finally {
+      setSending(false);
+    }
   };
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

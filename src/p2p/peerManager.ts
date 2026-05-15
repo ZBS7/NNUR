@@ -187,7 +187,8 @@ class PeerManager {
           this.connections.delete(pid);
           this.emit('connection-status', { peerId: pid, status: 'disconnected' });
           db.contacts.update(pid, { online: false, lastSeen: Date.now() });
-          this.scheduleReconnect(pid, 10000);
+          // Don't spam reconnect — wait 30s before trying again
+          this.scheduleReconnect(pid, 30000);
         }
         return;
       }
@@ -216,12 +217,16 @@ class PeerManager {
     if (ex?.status === 'connected' || ex?.status === 'connecting') return;
     if (!this.peer || this.peer.destroyed) return;
 
+    // Clear any pending reconnect timer
+    const old = this.reconnectTimers.get(targetPeerId);
+    if (old) { clearTimeout(old); this.reconnectTimers.delete(targetPeerId); }
+
     this.emit('connection-status', { peerId: targetPeerId, status: 'connecting' });
+    console.log('[NUR] 🔄 Initiating connection to:', targetPeerId);
     const conn = this.peer.connect(targetPeerId, {
       reliable: true, serialization: 'json',
       metadata: { from: this.myPeerId },
     });
-    console.log('[NUR] 🔄 Initiating connection to:', targetPeerId);
     this.setupConnection(conn, targetPeerId);
   }
 
@@ -528,15 +533,17 @@ class PeerManager {
   // Wait until DataChannel buffer drains below threshold
   private waitForBuffer(conn: DataConnection): Promise<void> {
     return new Promise((resolve) => {
-      // Access underlying RTCDataChannel
       const dc = (conn as any)._dc as RTCDataChannel | undefined;
       if (!dc) { resolve(); return; }
 
-      const MAX_BUFFER = 256 * 1024; // 256KB threshold
+      const MAX_BUFFER = 256 * 1024;
       if (dc.bufferedAmount < MAX_BUFFER) { resolve(); return; }
 
+      let attempts = 0;
       const check = () => {
-        if (dc.bufferedAmount < MAX_BUFFER) {
+        attempts++;
+        // Give up after 10 seconds — don't block forever
+        if (attempts > 200 || dc.bufferedAmount < MAX_BUFFER) {
           resolve();
         } else {
           setTimeout(check, 50);
@@ -639,9 +646,12 @@ class PeerManager {
   }
 
   private scheduleReconnect(peerId: string, delay: number) {
-    const old = this.reconnectTimers.get(peerId);
-    if (old) clearTimeout(old);
-    const t = setTimeout(() => this.connectTo(peerId), delay);
+    // Don't schedule if already pending
+    if (this.reconnectTimers.has(peerId)) return;
+    const t = setTimeout(() => {
+      this.reconnectTimers.delete(peerId);
+      this.connectTo(peerId);
+    }, delay);
     this.reconnectTimers.set(peerId, t);
   }
 

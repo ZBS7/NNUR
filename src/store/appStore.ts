@@ -146,7 +146,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
     if (chatId) {
       get().loadMessages(chatId);
       get().markChatRead(chatId);
-      peerManager.connectTo(chatId);
+      // Only connect for direct chats
+      db.chats.get(chatId).then((chat) => {
+        if (!chat || chat.type === 'direct') {
+          peerManager.connectTo(chatId);
+        }
+      });
     }
   },
 
@@ -199,8 +204,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
 
     // Direct chat
-    const msg = await peerManager.sendMessage(toPeerId, content, type, extra);
-    get().addMessage(msg);
+    try {
+      const msg = await peerManager.sendMessage(toPeerId, content, type, extra);
+      get().addMessage(msg);
+    } catch (err) {
+      console.error('[appStore] sendMessage error:', err);
+      throw err;
+    }
     const chats = await db.chats.orderBy('lastMessageAt').reverse().toArray();
     set({ chats });
   },
