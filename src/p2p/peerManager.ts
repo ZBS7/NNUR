@@ -9,34 +9,47 @@ import { encrypt, decrypt, getSharedKey } from '../crypto/e2ee';
 const SIGNAL_HOST = 'nur-signal-production.up.railway.app';
 const SIGNAL_PATH = '/nur';
 
-const ICE_SERVERS = [
+// Fallback ICE servers (used if /ice-servers endpoint fails)
+const FALLBACK_ICE: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  // Metered.ca TURN servers (reliable NAT traversal)
-  {
-    urls: 'stun:nnurr.metered.live:80',
-  },
   {
     urls: 'turn:nnurr.metered.live:80',
-    username: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
-    credential: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+    username: 'd0a07fcab67f4f9a0f9fd81d',
+    credential: 'LQEPITaYF3Lyvz5o',
   },
   {
     urls: 'turn:nnurr.metered.live:80?transport=tcp',
-    username: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
-    credential: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+    username: 'd0a07fcab67f4f9a0f9fd81d',
+    credential: 'LQEPITaYF3Lyvz5o',
   },
   {
     urls: 'turn:nnurr.metered.live:443',
-    username: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
-    credential: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+    username: 'd0a07fcab67f4f9a0f9fd81d',
+    credential: 'LQEPITaYF3Lyvz5o',
   },
   {
     urls: 'turns:nnurr.metered.live:443?transport=tcp',
-    username: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
-    credential: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+    username: 'd0a07fcab67f4f9a0f9fd81d',
+    credential: 'LQEPITaYF3Lyvz5o',
   },
 ];
+
+async function fetchIceServers(): Promise<RTCIceServer[]> {
+  try {
+    const res = await fetch(`https://${SIGNAL_HOST}/ice-servers`);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (Array.isArray(data) && data.length > 0) {
+      console.log('[NUR] Got', data.length, 'ICE servers from backend');
+      return data;
+    }
+    return FALLBACK_ICE;
+  } catch (err) {
+    console.warn('[NUR] Could not fetch ICE servers, using fallback:', err);
+    return FALLBACK_ICE;
+  }
+}
 
 // Chunk size for large binary data (16KB — conservative for reliability)
 const CHUNK_SIZE = 16 * 1024;
@@ -101,6 +114,7 @@ class PeerManager {
   private handlers = new Map<string, EventHandler[]>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private retryCount = 0;
+  private iceServers: RTCIceServer[] = FALLBACK_ICE;
   private chunkBuffers = new Map<string, ChunkBuffer>();
   private activeCall: MediaConnection | null = null;
   private localStream: MediaStream | null = null;
@@ -113,6 +127,8 @@ class PeerManager {
     this.myDisplayName = displayName;
     this.myAvatar = avatar || '';
     this.retryCount = 0;
+    // Fetch fresh ICE servers (includes TURN credentials from Metered)
+    this.iceServers = await fetchIceServers();
     return new Promise<void>((resolve, reject) => this.createPeer(resolve, reject));
   }
 
@@ -124,7 +140,7 @@ class PeerManager {
       port: 443,
       path: SIGNAL_PATH,
       secure: true,
-      config: { iceServers: ICE_SERVERS },
+      config: { iceServers: this.iceServers },
       debug: 0,
     });
 
