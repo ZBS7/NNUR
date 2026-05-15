@@ -71,6 +71,7 @@ export default function CallScreen({ incoming, outgoing, onEnd }: Props) {
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement>(null); // for audio-only calls
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ringtoneRef = useRef<ReturnType<typeof makeRingtone> | null>(null);
   const dialRef = useRef<ReturnType<typeof makeDialTone> | null>(null);
@@ -107,9 +108,15 @@ export default function CallScreen({ incoming, outgoing, onEnd }: Props) {
     const onEnded = () => { cleanup(); onEnd(); };
     const onRejected = () => { cleanup(); onEnd(); };
     const onStream = ({ stream }: { stream: MediaStream }) => {
+      // Video call — attach to video element
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = stream;
         remoteVideoRef.current.play().catch(() => {});
+      }
+      // Audio call — attach to audio element (always, as fallback)
+      if (remoteAudioRef.current) {
+        remoteAudioRef.current.srcObject = stream;
+        remoteAudioRef.current.play().catch(() => {});
       }
     };
     peerManager.on('call-ended', onEnded);
@@ -232,6 +239,9 @@ export default function CallScreen({ incoming, outgoing, onEnd }: Props) {
       background: isVideo && phase === 'active' ? '#000' : 'linear-gradient(160deg,#1A0A3C 0%,#0F0E17 50%,#1A1825 100%)',
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
     }}>
+      {/* Hidden audio element for audio-only calls */}
+      <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
+
       {/* Remote video — fullscreen */}
       {isVideo && (
         <video ref={remoteVideoRef} autoPlay playsInline

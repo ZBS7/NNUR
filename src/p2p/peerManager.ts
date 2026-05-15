@@ -13,12 +13,26 @@ const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
+  // Free TURN servers from Open Relay (metered.ca)
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
 ];
 
-// Chunk size for large binary data (32KB is safe for WebRTC DataChannel)
-const CHUNK_SIZE = 32 * 1024;
+// Chunk size for large binary data (16KB — conservative for reliability)
+const CHUNK_SIZE = 16 * 1024;
 
 // Type for a chat message payload
 interface ChatPayload {
@@ -317,14 +331,27 @@ class PeerManager {
         if (data.chunked && data.totalChunks && data.totalChunks > 1) {
           let buf = this.chunkBuffers.get(data.id);
           if (!buf) {
-            buf = { chunks: new Array(data.totalChunks).fill(''), total: data.totalChunks, meta: data };
+            // Pre-allocate array with exact size
+            buf = {
+              chunks: new Array(data.totalChunks).fill(null),
+              total: data.totalChunks,
+              meta: data,
+            };
             this.chunkBuffers.set(data.id, buf);
           }
+          // Store chunk at exact index
           buf.chunks[data.chunkIndex!] = data.content;
-          const received = buf.chunks.filter((c) => c !== '').length;
-          if (received < buf.total) break; // wait for more chunks
+
+          // Count non-null chunks
+          const received = buf.chunks.filter((c) => c !== null).length;
+          console.log(`[NUR] Chunk ${data.chunkIndex! + 1}/${data.totalChunks} for msg ${data.id.slice(0, 8)}`);
+
+          if (received < buf.total) break; // wait for more
+
+          // All chunks received — reassemble in order
           chatData = { ...buf.meta, content: buf.chunks.join(''), chunked: false };
           this.chunkBuffers.delete(data.id);
+          console.log(`[NUR] Reassembled ${data.totalChunks} chunks, total size: ${chatData.content.length}`);
         }
 
         let content = chatData.content;
@@ -459,8 +486,8 @@ class PeerManager {
           ...base, content: chunk,
           chunked: true, chunkIndex: i, totalChunks,
         });
-        // Yield to event loop between chunks to avoid blocking
-        await new Promise((r) => setTimeout(r, 15));
+        // Wait between chunks — give DataChannel time to flush
+        await new Promise((r) => setTimeout(r, 30));
       }
     } finally {
       state.transferring = false;
