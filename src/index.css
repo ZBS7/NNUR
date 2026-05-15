@@ -134,7 +134,10 @@ img { max-width: 100%; display: block; }
 
 .sidebar-footer {
   border-top: 1px solid var(--border); padding: 12px 14px;
-  display: flex; align-items: center; gap: 10px; cursor: pointer; transition: background 0.12s;
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  transition: background 0.12s; flex-shrink: 0;
+  background: var(--bg2); z-index: 1;
+  min-height: 64px;
 }
 .sidebar-footer:hover { background: var(--bg3); }
 .sidebar-footer-info { flex: 1; min-width: 0; }

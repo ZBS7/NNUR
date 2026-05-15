@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
-import { db, Identity, Contact, Message, Chat } from '../db/database';
-import { generateKeyPair } from '../crypto/e2ee';
+import { db, Identity, Contact, Message, Chat } from '../db/database';import { generateKeyPair } from '../crypto/e2ee';
 import { peerManager } from '../p2p/peerManager';
 
 type Screen = 'setup' | 'main';
@@ -157,6 +156,49 @@ export const useAppStore = create<AppState>()((set, get) => ({
   },
 
   sendMessage: async (toPeerId, content, type = 'text', extra) => {
+    const chat = await db.chats.get(toPeerId);
+
+    // Group chat — send to all members
+    if (chat?.type === 'group') {
+      const identity = await db.identity.get('me');
+      const memberIds = (chat.memberIds || []).filter((id) => id !== identity?.peerId);
+
+      // Save message locally
+      const message = {
+        id: uuidv4(),
+        chatId: toPeerId,
+        senderId: identity!.peerId,
+        type: (type || 'text') as any,
+        content,
+        ...extra,
+        status: 'sent' as const,
+        createdAt: Date.now(),
+        encrypted: false,
+      };
+      await db.messages.put(message);
+      await db.chats.update(toPeerId, {
+        lastMessage: type === 'text' ? content.slice(0, 100) : `[${type}]`,
+        lastMessageAt: message.createdAt,
+        lastMessageType: type as any,
+      });
+
+      // Send to each member via P2P
+      for (const memberId of memberIds) {
+        try {
+          await peerManager.sendMessage(memberId, content, type, {
+            ...extra,
+            replyToId: extra?.replyToId,
+          });
+        } catch {}
+      }
+
+      get().addMessage(message);
+      const chats = await db.chats.orderBy('lastMessageAt').reverse().toArray();
+      set({ chats });
+      return;
+    }
+
+    // Direct chat
     const msg = await peerManager.sendMessage(toPeerId, content, type, extra);
     get().addMessage(msg);
     const chats = await db.chats.orderBy('lastMessageAt').reverse().toArray();

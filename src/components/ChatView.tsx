@@ -1,30 +1,33 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import { peerManager } from '../p2p/peerManager';
-import { db, Message } from '../db/database';
+import { db, Message, Chat } from '../db/database';
 import MessageBubble, { fmtDate } from './MessageBubble';
 import Avatar from './Avatar';
 import CallScreen, { IncomingCallInfo } from './CallScreen';
+import GroupInfoModal from './GroupInfoModal';
 import {
-  IoArrowBack, IoSend, IoAttach, IoMic, IoClose,
+  IoArrowBack, IoSend, IoAttach, IoClose,
   IoImage, IoVideocam, IoDocument, IoLockClosed, IoCall,
+  IoPeople, IoInformationCircle,
 } from 'react-icons/io5';
 
 interface Props { chatId: string; }
 
 export default function ChatView({ chatId }: Props) {
-  const { identity, contacts, messages, typingPeers, connectionStatuses, sendMessage, setActiveChat, loadMessages } = useAppStore();
+  const { identity, contacts, chats, messages, typingPeers, connectionStatuses, sendMessage, setActiveChat, loadMessages } = useAppStore();
   const contact = contacts.find((c) => c.id === chatId);
+  const chat = chats.find((c) => c.id === chatId);
+  const isGroup = chat?.type === 'group';
   const chatMessages = messages[chatId] || [];
   const isTyping = typingPeers[chatId] || false;
-  const connStatus = connectionStatuses[chatId] || 'disconnected';
+  const connStatus = connectionStatuses[chatId] || (isGroup ? 'connected' : 'disconnected');
 
   const [text, setText] = useState('');
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [showAttach, setShowAttach] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [recTime, setRecTime] = useState(0);
   const [sending, setSending] = useState(false);
+  const [showGroupInfo, setShowGroupInfo] = useState(false);
 
   // ── Call state ────────────────────────────────────────────────────────────
   const [outgoingCall, setOutgoingCall] = useState<{
@@ -37,15 +40,12 @@ export default function ChatView({ chatId }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLInputElement>(null);
   const vidRef = useRef<HTMLInputElement>(null);
-  const mediaRecRef = useRef<MediaRecorder | null>(null);
-  const audioChunks = useRef<Blob[]>([]);
-  const recTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Load messages & connect ───────────────────────────────────────────────
   useEffect(() => {
     loadMessages(chatId);
-    peerManager.connectTo(chatId);
+    if (!isGroup) peerManager.connectTo(chatId);
   }, [chatId]);
 
   useEffect(() => {
@@ -139,47 +139,19 @@ export default function ChatView({ chatId }: Props) {
     let type = 'file';
     if (f.type.startsWith('image/')) type = 'image';
     else if (f.type.startsWith('video/')) type = 'video';
-    else if (f.type.startsWith('audio/')) type = 'audio';
     sendFile(f, type); e.target.value = '';
   };
 
-  // ── Voice recording ───────────────────────────────────────────────────────
-  const toggleRecording = async () => {
-    if (recording) {
-      mediaRecRef.current?.stop();
-      setRecording(false);
-      if (recTimer.current) clearInterval(recTimer.current);
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
-        const mr = new MediaRecorder(stream, { mimeType: mime });
-        mediaRecRef.current = mr; audioChunks.current = [];
-        mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.current.push(e.data); };
-        mr.onstop = async () => {
-          const blob = new Blob(audioChunks.current, { type: mime });
-          const ext = mime.includes('webm') ? 'webm' : 'ogg';
-          const file = new File([blob], `voice_${Date.now()}.${ext}`, { type: mime });
-          stream.getTracks().forEach((t) => t.stop());
-          await sendFile(file, 'audio'); setRecTime(0);
-        };
-        mr.start(); setRecording(true);
-        recTimer.current = setInterval(() => setRecTime((t) => t + 1), 1000);
-      } catch { alert('Microphone access denied'); }
-    }
-  };
+  const statusLabel = isGroup ? `${chat?.memberIds?.length || 0} members`
+    : connStatus === 'connected' ? 'online'
+    : connStatus === 'connecting' ? 'connecting...' : 'offline';
+  const statusClass = isGroup ? 'status-online'
+    : connStatus === 'connected' ? 'status-online'
+    : connStatus === 'connecting' ? 'status-connecting' : 'status-offline';
 
-  const cancelRec = () => {
-    if (mediaRecRef.current && recording) {
-      mediaRecRef.current.ondataavailable = null; mediaRecRef.current.onstop = null;
-      mediaRecRef.current.stop(); setRecording(false); setRecTime(0);
-      if (recTimer.current) clearInterval(recTimer.current);
-    }
-  };
-
-  const fmtRec = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`;
-  const statusLabel = connStatus === 'connected' ? 'online' : connStatus === 'connecting' ? 'connecting...' : 'offline';
-  const statusClass = connStatus === 'connected' ? 'status-online' : connStatus === 'connecting' ? 'status-connecting' : 'status-offline';
+  // Chat name
+  const chatName = isGroup ? (chat?.name || 'Group') : (contact?.displayName || chatId);
+  const chatAvatar = isGroup ? chat?.avatar : contact?.avatar;
 
   // Group messages by date
   const grouped: { date: string; msgs: Message[] }[] = [];
@@ -196,29 +168,34 @@ export default function ChatView({ chatId }: Props) {
         {/* ── Header ── */}
         <div className="chat-header">
           <button className="icon-btn back-btn" onClick={() => setActiveChat(null)}><IoArrowBack /></button>
-          <Avatar src={contact?.avatar} name={contact?.displayName || chatId} size={40}
-            online={connStatus === 'connected'} connecting={connStatus === 'connecting'} />
-          <div className="chat-header-info">
-            <span className="chat-header-name">{contact?.displayName || chatId}</span>
+          <Avatar src={chatAvatar} name={chatName} size={40}
+            online={!isGroup && connStatus === 'connected'}
+            connecting={!isGroup && connStatus === 'connecting'} />
+          <div className="chat-header-info" onClick={() => isGroup && setShowGroupInfo(true)}>
+            <span className="chat-header-name">{chatName}</span>
             <span className={`chat-header-sub ${statusClass}`}>{statusLabel}</span>
           </div>
-          {/* Call buttons */}
-          <button
-            className="icon-btn"
-            title="Audio call"
-            onClick={() => startCall('audio')}
-            style={{ color: connStatus === 'connected' ? 'var(--green)' : 'var(--text3)' }}
-          >
-            <IoCall />
-          </button>
-          <button
-            className="icon-btn"
-            title="Video call"
-            onClick={() => startCall('video')}
-            style={{ color: connStatus === 'connected' ? 'var(--accent3)' : 'var(--text3)' }}
-          >
-            <IoVideocam />
-          </button>
+          {/* Group info button */}
+          {isGroup && (
+            <button className="icon-btn" onClick={() => setShowGroupInfo(true)} title="Group info">
+              <IoInformationCircle />
+            </button>
+          )}
+          {/* Call buttons — only for direct chats */}
+          {!isGroup && (
+            <>
+              <button className="icon-btn" title="Audio call"
+                onClick={() => startCall('audio')}
+                style={{ color: connStatus === 'connected' ? 'var(--green)' : 'var(--text3)' }}>
+                <IoCall />
+              </button>
+              <button className="icon-btn" title="Video call"
+                onClick={() => startCall('video')}
+                style={{ color: connStatus === 'connected' ? 'var(--accent3)' : 'var(--text3)' }}>
+                <IoVideocam />
+              </button>
+            </>
+          )}
           <div className="e2ee-badge"><IoLockClosed size={11} /> E2EE</div>
         </div>
 
@@ -229,14 +206,15 @@ export default function ChatView({ chatId }: Props) {
               <div className="date-sep"><span>{g.date}</span></div>
               {g.msgs.map((msg, i) => {
                 const prev = g.msgs[i - 1];
+                const senderContact = isGroup ? contacts.find((c) => c.id === msg.senderId) : contact;
                 return (
                   <MessageBubble
                     key={msg.id}
                     message={msg}
                     isMe={msg.senderId === identity?.peerId}
-                    showAvatar={!prev || prev.senderId !== msg.senderId}
-                    contactName={contact?.displayName || chatId}
-                    contactAvatar={contact?.avatar}
+                    showAvatar={isGroup && (!prev || prev.senderId !== msg.senderId)}
+                    contactName={senderContact?.displayName || msg.senderId.slice(0, 8)}
+                    contactAvatar={senderContact?.avatar}
                     allMessages={chatMessages}
                     onReply={setReplyTo}
                   />
@@ -258,72 +236,52 @@ export default function ChatView({ chatId }: Props) {
           {replyTo && (
             <div className="reply-bar">
               <div className="reply-bar-content">
-                <span className="reply-bar-name">{replyTo.senderId === identity?.peerId ? 'You' : contact?.displayName}</span>
+                <span className="reply-bar-name">{replyTo.senderId === identity?.peerId ? 'You' : (contact?.displayName || replyTo.senderId.slice(0, 8))}</span>
                 <span className="reply-bar-text">{replyTo.type !== 'text' ? `[${replyTo.type}]` : replyTo.content}</span>
               </div>
               <button className="icon-btn" onClick={() => setReplyTo(null)}><IoClose /></button>
             </div>
           )}
 
-          {recording ? (
-            <div className="rec-bar">
-              <button className="icon-btn" style={{ color: 'var(--red)' }} onClick={cancelRec}><IoClose /></button>
-              <span className="rec-dot" />
-              <span className="rec-time" style={{ flex: 1, marginLeft: 8 }}>{fmtRec(recTime)}</span>
-              <button className="send-btn" onClick={toggleRecording}><IoSend /></button>
-            </div>
-          ) : (
-            <div className="input-row">
-              <div className="attach-wrap">
-                <button className="icon-btn" onClick={() => setShowAttach(!showAttach)}><IoAttach /></button>
-                {showAttach && (
-                  <div className="attach-menu">
-                    <button className="attach-item" onClick={() => { imgRef.current?.click(); setShowAttach(false); }}><IoImage /> Photo / Video</button>
-                    <button className="attach-item" onClick={() => { vidRef.current?.click(); setShowAttach(false); }}><IoVideocam /> Video</button>
-                    <button className="attach-item" onClick={() => { fileRef.current?.click(); setShowAttach(false); }}><IoDocument /> Any File</button>
-                  </div>
-                )}
-              </div>
-
-              <input ref={imgRef} type="file" accept="image/*,video/*" style={{ display: 'none' }} onChange={handleImgSelect} />
-              <input ref={vidRef} type="file" accept="video/*" style={{ display: 'none' }} onChange={handleVidSelect} />
-              <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileSelect} />
-
-              <textarea
-                className="msg-input"
-                placeholder="Message..."
-                value={text}
-                onChange={handleTextChange}
-                onKeyDown={handleKey}
-                rows={1}
-                disabled={sending}
-              />
-
-              {text.trim() ? (
-                <button className="send-btn" onClick={handleSend} disabled={sending}><IoSend /></button>
-              ) : (
-                <button className={`send-btn mic-btn ${recording ? 'rec' : ''}`} onClick={toggleRecording}><IoMic /></button>
+          <div className="input-row">
+            <div className="attach-wrap">
+              <button className="icon-btn" onClick={() => setShowAttach(!showAttach)}><IoAttach /></button>
+              {showAttach && (
+                <div className="attach-menu">
+                  <button className="attach-item" onClick={() => { imgRef.current?.click(); setShowAttach(false); }}><IoImage /> Photo / Video</button>
+                  <button className="attach-item" onClick={() => { vidRef.current?.click(); setShowAttach(false); }}><IoVideocam /> Video</button>
+                  <button className="attach-item" onClick={() => { fileRef.current?.click(); setShowAttach(false); }}><IoDocument /> Any File</button>
+                </div>
               )}
             </div>
-          )}
+
+            <input ref={imgRef} type="file" accept="image/*,video/*" style={{ display: 'none' }} onChange={handleImgSelect} />
+            <input ref={vidRef} type="file" accept="video/*" style={{ display: 'none' }} onChange={handleVidSelect} />
+            <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileSelect} />
+
+            <textarea
+              className="msg-input"
+              placeholder="Message..."
+              value={text}
+              onChange={handleTextChange}
+              onKeyDown={handleKey}
+              rows={1}
+              disabled={sending}
+            />
+            <button className="send-btn" onClick={handleSend} disabled={sending || !text.trim()}><IoSend /></button>
+          </div>
         </div>
       </div>
 
-      {/* ── Outgoing call screen ── */}
-      {outgoingCall && (
-        <CallScreen
-          outgoing={outgoingCall}
-          onEnd={() => setOutgoingCall(null)}
-        />
+      {/* ── Group info modal ── */}
+      {showGroupInfo && isGroup && (
+        <GroupInfoModal chatId={chatId} onClose={() => setShowGroupInfo(false)} />
       )}
 
-      {/* ── Incoming call screen ── */}
-      {incomingCall && (
-        <CallScreen
-          incoming={incomingCall}
-          onEnd={() => setIncomingCall(null)}
-        />
-      )}
+      {/* ── Outgoing call ── */}
+      {outgoingCall && <CallScreen outgoing={outgoingCall} onEnd={() => setOutgoingCall(null)} />}
+      {/* ── Incoming call ── */}
+      {incomingCall && <CallScreen incoming={incomingCall} onEnd={() => setIncomingCall(null)} />}
     </>
   );
 }
