@@ -11,25 +11,24 @@ const SIGNAL_PATH = '/nur';
 
 // Fallback ICE servers (used if /ice-servers endpoint fails)
 const FALLBACK_ICE: RTCIceServer[] = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.relay.metered.ca:80' },
   {
-    urls: 'turn:nnurr.metered.live:80',
+    urls: 'turn:global.relay.metered.ca:80',
     username: 'd0a07fcab67f4f9a0f9fd81d',
     credential: 'LQEPITaYF3Lyvz5o',
   },
   {
-    urls: 'turn:nnurr.metered.live:80?transport=tcp',
+    urls: 'turn:global.relay.metered.ca:80?transport=tcp',
     username: 'd0a07fcab67f4f9a0f9fd81d',
     credential: 'LQEPITaYF3Lyvz5o',
   },
   {
-    urls: 'turn:nnurr.metered.live:443',
+    urls: 'turn:global.relay.metered.ca:443',
     username: 'd0a07fcab67f4f9a0f9fd81d',
     credential: 'LQEPITaYF3Lyvz5o',
   },
   {
-    urls: 'turns:nnurr.metered.live:443?transport=tcp',
+    urls: 'turns:global.relay.metered.ca:443?transport=tcp',
     username: 'd0a07fcab67f4f9a0f9fd81d',
     credential: 'LQEPITaYF3Lyvz5o',
   },
