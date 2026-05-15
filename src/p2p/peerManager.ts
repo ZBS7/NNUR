@@ -26,8 +26,10 @@ interface PeerState {
 
 type EventHandler = (...args: any[]) => void;
 
-// Multiple free PeerJS-compatible signaling servers to try
-// We use PeerJS default cloud first (most reliable), then fallback
+// Your own Railway signaling server
+const SIGNAL_HOST = 'nur-signal-production.up.railway.app';
+const SIGNAL_PATH = '/nur';
+
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -77,11 +79,13 @@ class PeerManager {
   }
 
   private createPeer() {
-    // Use PeerJS default cloud server (cloud.peerjs.com) — most reliable
-    // No host/port/path = uses official PeerJS cloud
-    console.log(`[NUR] Connecting to PeerJS cloud, ID: ${this.myPeerId}`);
+    console.log(`[NUR] Connecting via Railway: ${SIGNAL_HOST}, ID: ${this.myPeerId}`);
 
     this.peer = new Peer(this.myPeerId, {
+      host: SIGNAL_HOST,
+      port: 443,
+      path: SIGNAL_PATH,
+      secure: true,
       config: { iceServers: ICE_SERVERS },
       debug: 1,
     });
