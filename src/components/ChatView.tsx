@@ -27,6 +27,7 @@ export default function ChatView({ chatId }: Props) {
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [showAttach, setShowAttach] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendingFile, setSendingFile] = useState(''); // filename being sent
   const [showGroupInfo, setShowGroupInfo] = useState(false);
 
   // ── Call state ────────────────────────────────────────────────────────────
@@ -120,16 +121,40 @@ export default function ChatView({ chatId }: Props) {
   };
 
   // ── File sending ──────────────────────────────────────────────────────────
+  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB limit for P2P DataChannel
+
   const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(file); });
+    new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result as string);
+      r.onerror = rej;
+      r.readAsDataURL(file);
+    });
 
   const sendFile = async (file: File, type: string) => {
-    setSending(true); setShowAttach(false);
+    if (file.size > MAX_FILE_SIZE) {
+      alert(`File too large. Maximum size is 5MB.\n\nYour file: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
+      return;
+    }
+    setSending(true);
+    setSendingFile(file.name);
+    setShowAttach(false);
     try {
       const b64 = await fileToBase64(file);
-      await sendMessage(chatId, b64, type, { fileName: file.name, fileSize: file.size, mimeType: file.type, replyToId: replyTo?.id });
+      await sendMessage(chatId, b64, type, {
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+        replyToId: replyTo?.id,
+      });
       setReplyTo(null);
-    } catch {} finally { setSending(false); }
+    } catch (err) {
+      console.error('File send error:', err);
+      alert('Failed to send file. Please try again.');
+    } finally {
+      setSending(false);
+      setSendingFile('');
+    }
   };
 
   const handleImgSelect = (e: React.ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (f) sendFile(f, f.type.startsWith('video/') ? 'video' : 'image'); e.target.value = ''; };
@@ -233,6 +258,20 @@ export default function ChatView({ chatId }: Props) {
 
         {/* ── Input ── */}
         <div className="input-area">
+          {/* File sending progress */}
+          {sendingFile && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+              background: 'rgba(108,99,255,0.1)', borderRadius: 10, marginBottom: 8,
+              border: '1px solid rgba(108,99,255,0.2)',
+            }}>
+              <div style={{ width: 16, height: 16, border: '2px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+              <span style={{ fontSize: 13, color: 'var(--text2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                Sending {sendingFile}…
+              </span>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            </div>
+          )}
           {replyTo && (
             <div className="reply-bar">
               <div className="reply-bar-content">

@@ -505,17 +505,45 @@ class PeerManager {
 
     try {
       for (let i = 0; i < totalChunks; i++) {
+        // Wait if DataChannel buffer is getting full (flow control)
+        await this.waitForBuffer(state.conn);
+
         const chunk = sendContent.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
         this.sendRaw(state.conn, {
           ...base, content: chunk,
           chunked: true, chunkIndex: i, totalChunks,
         });
-        // Wait between chunks — give DataChannel time to flush
+        // Small delay between chunks
         await new Promise((r) => setTimeout(r, 30));
       }
+      console.log(`[NUR] All ${totalChunks} chunks sent for ${message.id.slice(0, 8)}`);
+    } catch (err) {
+      console.error('[NUR] Transmit error:', err);
+      throw err;
     } finally {
       state.transferring = false;
     }
+  }
+
+  // Wait until DataChannel buffer drains below threshold
+  private waitForBuffer(conn: DataConnection): Promise<void> {
+    return new Promise((resolve) => {
+      // Access underlying RTCDataChannel
+      const dc = (conn as any)._dc as RTCDataChannel | undefined;
+      if (!dc) { resolve(); return; }
+
+      const MAX_BUFFER = 256 * 1024; // 256KB threshold
+      if (dc.bufferedAmount < MAX_BUFFER) { resolve(); return; }
+
+      const check = () => {
+        if (dc.bufferedAmount < MAX_BUFFER) {
+          resolve();
+        } else {
+          setTimeout(check, 50);
+        }
+      };
+      setTimeout(check, 50);
+    });
   }
 
   private async flushPendingMessages(peerId: string) {
