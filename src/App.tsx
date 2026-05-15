@@ -5,15 +5,15 @@ import Sidebar from './components/Sidebar';
 import ChatView from './components/ChatView';
 import CallScreen, { IncomingCallInfo } from './components/CallScreen';
 import { peerManager } from './p2p/peerManager';
+import { useNotifications } from './hooks/useNotifications';
 import { IoLockClosed } from 'react-icons/io5';
 
 export default function App() {
   const { screen, activeChatId, contacts, loadData } = useAppStore();
   const [globalIncoming, setGlobalIncoming] = useState<IncomingCallInfo | null>(null);
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  useNotifications();
+  useEffect(() => { loadData(); }, []);
 
   // Listen for incoming calls globally (even when no chat is open)
   useEffect(() => {
