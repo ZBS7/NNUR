@@ -12,22 +12,29 @@ const SIGNAL_PATH = '/nur';
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  // Free TURN servers from Open Relay (metered.ca)
+  // Metered.ca TURN servers (reliable NAT traversal)
   {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
+    urls: 'stun:nnurr.metered.live:80',
   },
   {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
+    urls: 'turn:nnurr.metered.live:80',
+    username: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+    credential: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
   },
   {
-    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
+    urls: 'turn:nnurr.metered.live:80?transport=tcp',
+    username: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+    credential: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+  },
+  {
+    urls: 'turn:nnurr.metered.live:443',
+    username: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+    credential: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+  },
+  {
+    urls: 'turns:nnurr.metered.live:443?transport=tcp',
+    username: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
+    credential: 'yjoHq0lTBt_LS4u6Kt2n-V2Z_rB54_aTyviTQ8GWRUnHlRXw',
   },
 ];
 
@@ -199,6 +206,7 @@ class PeerManager {
       reliable: true, serialization: 'json',
       metadata: { from: this.myPeerId },
     });
+    console.log('[NUR] 🔄 Initiating connection to:', targetPeerId);
     this.setupConnection(conn, targetPeerId);
   }
 
@@ -223,6 +231,7 @@ class PeerManager {
     conn.on('open', async () => {
       clearTimeout(openTimeout);
       state.status = 'connected';
+      console.log('[NUR] ✅ Connected to peer:', peerId);
       this.emit('connection-status', { peerId, status: 'connected' });
       this.sendRaw(conn, {
         type: 'handshake',

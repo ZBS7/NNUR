@@ -46,18 +46,21 @@ export default function Sidebar() {
       </div>
 
       {/* P2P status */}
-      <div className="peer-status-bar">
+      <div className="peer-status-bar" style={{ cursor: 'pointer' }} onClick={() => {
+        const id = identity?.peerId || 'unknown';
+        alert(`Your Peer ID:\n${id}\n\nStatus: ${peerError ? 'ERROR: ' + peerError : peerReady ? 'Connected to signaling server' : 'Connecting...'}\n\nIf contacts show offline outside local network, the issue is NAT traversal. Check browser console for ICE errors.`);
+      }}>
         <div className={`peer-status-dot ${peerError ? 'error' : peerReady ? 'ready' : 'connecting'}`} />
         <span style={{ color: 'var(--text3)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {peerError
-            ? `Connection error`
+            ? `Error — tap for info`
             : peerReady
             ? `Connected · ${identity?.peerId?.slice(0, 14)}…`
-            : 'Connecting to P2P network…'}
+            : 'Connecting…'}
         </span>
         {peerError && (
           <button
-            onClick={() => { window.location.reload(); }}
+            onClick={(e) => { e.stopPropagation(); window.location.reload(); }}
             style={{ fontSize: 11, color: 'var(--accent3)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: 4, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3 }}
           >
             <IoRefresh size={12} /> Retry
