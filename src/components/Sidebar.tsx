@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAppStore } from '../store/appStore';
 import Avatar from './Avatar';
 import AddContactModal from './AddContactModal';
-import { IoAdd, IoSearch, IoQrCode, IoWifi } from 'react-icons/io5';
+import { IoAdd, IoSearch, IoQrCode, IoRefresh } from 'react-icons/io5';
 
 function fmtTime(ts?: number) {
   if (!ts) return '';
@@ -56,9 +56,9 @@ export default function Sidebar() {
         {peerError && (
           <button
             onClick={() => { window.location.reload(); }}
-            style={{ fontSize: 11, color: 'var(--accent3)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: 4, flexShrink: 0 }}
+            style={{ fontSize: 11, color: 'var(--accent3)', background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: 4, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3 }}
           >
-            Retry
+            <IoRefresh size={12} /> Retry
           </button>
         )}
       </div>

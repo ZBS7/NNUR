@@ -27,11 +27,7 @@ interface PeerState {
 type EventHandler = (...args: any[]) => void;
 
 // Multiple free PeerJS-compatible signaling servers to try
-const SIGNALING_SERVERS = [
-  { host: '0.peerjs.com', port: 443, path: '/', secure: true },
-  { host: 'peerjs.com', port: 443, path: '/myapp', secure: true },
-];
-
+// We use PeerJS default cloud first (most reliable), then fallback
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
@@ -39,6 +35,7 @@ const ICE_SERVERS = [
   { urls: 'stun:stun3.l.google.com:19302' },
   { urls: 'stun:stun4.l.google.com:19302' },
   { urls: 'stun:global.stun.twilio.com:3478' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
 ];
 
 class PeerManager {
@@ -80,30 +77,28 @@ class PeerManager {
   }
 
   private createPeer() {
-    const server = SIGNALING_SERVERS[this.serverIndex % SIGNALING_SERVERS.length];
-
-    console.log(`[NUR] Connecting to signaling server: ${server.host}`);
+    // Use PeerJS default cloud server (cloud.peerjs.com) — most reliable
+    // No host/port/path = uses official PeerJS cloud
+    console.log(`[NUR] Connecting to PeerJS cloud, ID: ${this.myPeerId}`);
 
     this.peer = new Peer(this.myPeerId, {
-      host: server.host,
-      port: server.port,
-      path: server.path,
-      secure: server.secure,
       config: { iceServers: ICE_SERVERS },
-      debug: 0,
+      debug: 1,
     });
 
-    // Timeout — if no connection in 8s, try next server
+    // Timeout — if no connection in 12s, retry with new ID
     const timeout = setTimeout(() => {
-      console.warn('[NUR] Signaling server timeout, trying next...');
+      console.warn('[NUR] Connection timeout, retrying with new ID...');
       this.peer?.destroy();
+      // Generate shorter ID on retry
+      this.myPeerId = `nur${Math.random().toString(36).slice(2, 10)}`;
       this.serverIndex++;
-      if (this.serverIndex < SIGNALING_SERVERS.length * 2) {
+      if (this.serverIndex < 3) {
         this.createPeer();
       } else {
-        this.initReject?.(new Error('Could not connect to P2P network. Check your internet connection.'));
+        this.initReject?.(new Error('Could not connect to P2P network after 3 attempts.'));
       }
-    }, 8000);
+    }, 12000);
 
     this.peer.on('open', (id) => {
       clearTimeout(timeout);

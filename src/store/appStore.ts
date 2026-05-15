@@ -53,7 +53,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   initIdentity: async (displayName, avatar) => {
     const keys = await generateKeyPair();
-    const peerId = `p2p-${uuidv4().replace(/-/g, '').slice(0, 20)}`;
+    // Short alphanumeric ID — PeerJS cloud works best with these
+    const peerId = `nur${uuidv4().replace(/-/g, '').slice(0, 12)}`;
     const identity: Identity = {
       id: 'me', peerId, displayName, avatar,
       publicKey: keys.publicKey, privateKey: keys.privateKey,
