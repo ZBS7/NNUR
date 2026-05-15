@@ -1,13 +1,11 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Set BASE to your GitHub repo name, e.g. '/nur-messenger/'
-// If deploying to a custom domain or root, set to '/'
-const BASE = process.env.VITE_BASE_PATH || '/';
-
 export default defineConfig({
   plugins: [react()],
-  base: BASE,
+  // For GitHub Pages: set to '/YOUR_REPO_NAME/'
+  // For local dev or custom domain: set to '/'
+  base: process.env.VITE_BASE_PATH ?? '/',
   server: {
     host: '0.0.0.0',
     port: 5174,
