@@ -255,6 +255,24 @@ class PeerManager {
       clearTimeout(openTimeout);
       state.status = 'connected';
       console.log('[NUR] ✅ Connected to peer:', peerId);
+
+      // Log ICE connection info for debugging
+      try {
+        const pc = (conn as any).peerConnection as RTCPeerConnection;
+        if (pc) {
+          pc.getStats().then((stats) => {
+            stats.forEach((report) => {
+              if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                console.log('[NUR] ICE pair:', report.localCandidateId, '→', report.remoteCandidateId);
+              }
+              if (report.type === 'local-candidate') {
+                console.log('[NUR] Local candidate type:', report.candidateType, report.address);
+              }
+            });
+          });
+        }
+      } catch {}
+
       this.emit('connection-status', { peerId, status: 'connected' });
       this.sendRaw(conn, {
         type: 'handshake',
