@@ -175,7 +175,10 @@ class PeerManager {
       console.error('[NUR] Error:', err.type);
 
       if (err.type === 'unavailable-id') {
+        // Generate new ID and persist it so contacts can find us
         this.myPeerId = `nur${Math.random().toString(36).slice(2, 10)}`;
+        console.warn('[NUR] ID taken, new ID:', this.myPeerId);
+        db.identity.update('me', { peerId: this.myPeerId });
         this.peer?.destroy();
         setTimeout(() => this.createPeer(resolve, reject), 500);
         return;
@@ -510,6 +513,10 @@ class PeerManager {
 
     try {
       for (let i = 0; i < totalChunks; i++) {
+        // Check connection still alive
+        if (state.status !== 'connected') {
+          throw new Error('Connection lost during file transfer');
+        }
         // Wait if DataChannel buffer is getting full (flow control)
         await this.waitForBuffer(state.conn);
 
