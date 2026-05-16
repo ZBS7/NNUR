@@ -50,8 +50,8 @@ async function fetchIceServers(): Promise<RTCIceServer[]> {
   }
 }
 
-// Chunk size for large binary data (16KB — conservative for reliability)
-const CHUNK_SIZE = 16 * 1024;
+// Chunk size — 8KB is safe for PeerJS JSON channel
+const CHUNK_SIZE = 8 * 1024;
 
 // Type for a chat message payload
 interface ChatPayload {
@@ -220,14 +220,14 @@ class PeerManager {
     if (ex?.status === 'connected' || ex?.status === 'connecting') return;
     if (!this.peer || this.peer.destroyed) return;
 
-    // Clear any pending reconnect timer
     const old = this.reconnectTimers.get(targetPeerId);
     if (old) { clearTimeout(old); this.reconnectTimers.delete(targetPeerId); }
 
     this.emit('connection-status', { peerId: targetPeerId, status: 'connecting' });
     console.log('[NUR] 🔄 Initiating connection to:', targetPeerId);
     const conn = this.peer.connect(targetPeerId, {
-      reliable: true, serialization: 'json',
+      reliable: true,
+      serialization: 'json',
       metadata: { from: this.myPeerId },
     });
     this.setupConnection(conn, targetPeerId);

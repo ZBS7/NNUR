@@ -127,26 +127,24 @@ export default function ChatView({ chatId }: Props) {
   };
 
   // ── File sending ──────────────────────────────────────────────────────────
-  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB limit for P2P DataChannel
-
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result as string);
-      r.onerror = rej;
-      r.readAsDataURL(file);
-    });
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
   const sendFile = async (file: File, type: string) => {
     if (file.size > MAX_FILE_SIZE) {
-      alert(`File too large. Maximum size is 5MB.\n\nYour file: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
+      alert(`File too large. Max 10MB.\nYour file: ${(file.size / 1024 / 1024).toFixed(1)}MB`);
       return;
     }
     setSending(true);
     setSendingFile(file.name);
     setShowAttach(false);
     try {
-      const b64 = await fileToBase64(file);
+      // Convert to base64
+      const b64 = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result as string);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
       await sendMessage(chatId, b64, type, {
         fileName: file.name,
         fileSize: file.size,
@@ -154,9 +152,9 @@ export default function ChatView({ chatId }: Props) {
         replyToId: replyTo?.id,
       });
       setReplyTo(null);
-    } catch (err) {
+    } catch (err: any) {
       console.error('File send error:', err);
-      alert('Failed to send file. Please try again.');
+      alert(`Failed to send file: ${err?.message || 'Unknown error'}`);
     } finally {
       setSending(false);
       setSendingFile('');
