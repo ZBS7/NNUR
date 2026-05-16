@@ -189,12 +189,12 @@ class PeerManager {
       console.error('[NUR] Error:', err.type);
 
       if (err.type === 'unavailable-id') {
-        // Generate new ID and persist it so contacts can find us
-        this.myPeerId = `nur${Math.random().toString(36).slice(2, 10)}`;
+        // Generate longer unique ID to avoid collisions on public PeerJS server
+        this.myPeerId = `nur-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
         console.warn('[NUR] ID taken, new ID:', this.myPeerId);
         db.identity.update('me', { peerId: this.myPeerId });
         this.peer?.destroy();
-        setTimeout(() => this.createPeer(resolve, reject), 500);
+        setTimeout(() => this.createPeer(resolve, reject), 800);
         return;
       }
       if (err.type === 'peer-unavailable') {
