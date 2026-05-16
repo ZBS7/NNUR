@@ -132,7 +132,12 @@ class PeerManager {
   }
 
   private createPeer(resolve?: () => void, reject?: (e: any) => void) {
-    if (this.peer && !this.peer.destroyed) this.peer.destroy();
+    if (this.peer) {
+      try {
+        if (!this.peer.destroyed) this.peer.destroy();
+      } catch {}
+      this.peer = null;
+    }
 
     this.peer = new Peer(this.myPeerId, {
       host: SIGNAL_HOST,
@@ -207,8 +212,15 @@ class PeerManager {
     this.peer.on('disconnected', () => {
       this.emit('server-disconnected');
       setTimeout(() => {
-        if (this.peer && !this.peer.destroyed) this.peer.reconnect();
-        else this.createPeer();
+        try {
+          if (this.peer && !this.peer.destroyed) {
+            this.peer.reconnect();
+          } else {
+            this.createPeer();
+          }
+        } catch {
+          this.createPeer();
+        }
       }, 3000);
     });
   }
