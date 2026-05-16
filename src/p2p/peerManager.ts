@@ -9,7 +9,8 @@ import { encrypt, decrypt, getSharedKey } from '../crypto/e2ee';
 const SIGNAL_HOST = 'nur-signal-production.up.railway.app';
 const SIGNAL_PATH = '/nur';
 
-// Fallback ICE servers (used if /ice-servers endpoint fails)
+// Hardcoded TURN credentials from Metered.ca (nnurr.metered.live)
+// These are used when the backend /ice-servers endpoint is unavailable
 const FALLBACK_ICE: RTCIceServer[] = [
   { urls: 'stun:stun.relay.metered.ca:80' },
   {
@@ -32,6 +33,9 @@ const FALLBACK_ICE: RTCIceServer[] = [
     username: 'd0a07fcab67f4f9a0f9fd81d',
     credential: 'LQEPITaYF3Lyvz5o',
   },
+  // Also add Google STUN as fallback
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
 async function fetchIceServers(): Promise<RTCIceServer[]> {
@@ -39,10 +43,12 @@ async function fetchIceServers(): Promise<RTCIceServer[]> {
     const res = await fetch(`https://${SIGNAL_HOST}/ice-servers`);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    if (Array.isArray(data) && data.length > 0) {
+    // Only use if we got TURN servers (more than just STUN)
+    if (Array.isArray(data) && data.length > 2) {
       console.log('[NUR] Got', data.length, 'ICE servers from backend');
       return data;
     }
+    console.log('[NUR] Backend returned only STUN, using hardcoded TURN');
     return FALLBACK_ICE;
   } catch (err) {
     console.warn('[NUR] Could not fetch ICE servers, using fallback:', err);
@@ -147,6 +153,9 @@ class PeerManager {
       config: { iceServers: this.iceServers },
       debug: 0,
     });
+    console.log('[NUR] Using', this.iceServers.length, 'ICE servers, TURN count:',
+      this.iceServers.filter((s) => (Array.isArray(s.urls) ? s.urls[0] : s.urls).startsWith('turn')).length
+    );
 
     const timeout = setTimeout(() => {
       this.peer?.destroy();
